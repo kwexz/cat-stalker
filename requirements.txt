@@ -1,0 +1,4 @@
+ultralytics
+opencv-python
+pygame
+python-miio @ git+https://github.com/rytilahti/python-miio.git

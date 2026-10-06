@@ -1,0 +1,45 @@
+.venv/
+.env
+.tmp/
+__pycache__/
+*.py[cod]
+*.pt
+*.tflite
+# ...except the CPU fallback bundled into the APK:
+!android/app/src/main/assets/yolo11n_float32.tflite
+*_ncnn_model/
+# ...except the active v5 model hardcoded in ncnn_detector.cpp:94.
+# Stale v1-v4 / COCO size experiments stay out:
+!android/app/src/main/assets/p30_cat_v5_384_fp16_ncnn_model/
+# All images/video under data/ are regenerable bulk (re-extract from
+# videos via tools/); labels (*.txt), manifests (*.csv), docs stay tracked:
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.png
+data/**/*.mp4
+data/**/*.avi
+android/app/src/main/cpp/ncnn/
+android/app/src/main/jniLibs/
+data/raw_videos/
+data/candidate_frames/
+data/p30_cat_yolo/
+runs/
+sessions/
+telemetry*.csv
+# Android / Gradle build outputs
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+*.apk
+*.aab
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
+# Logs
+*.log
