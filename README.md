@@ -12,6 +12,8 @@ other pets.
 
 - English (this file) · [Русский](README_RU.md)
 
+![P30 on the Dreame tracking the cat: DETECTED overlay with bbox](docs/cat_robot_phone.jpg)
+
 ## Contents
 
 - [The idea](#the-idea)

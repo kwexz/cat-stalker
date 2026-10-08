@@ -12,6 +12,8 @@
 
 - [English](README.md) · Русский (этот файл)
 
+![P30 на Dreame ведёт кота: оверлей DETECTED с боксом](docs/cat_robot_phone.jpg)
+
 ## Содержание
 
 - [Идея](#идея)
