@@ -6,7 +6,8 @@ diverse angles, and uses the robot speaker as the human-attention
 channel. Ctrl+C always ends with a safe stop (0,0 + stop_clean).
 
 Motion policy:
-- observe (default): no motion commands at all, keepalive move(0,0) only.
+- observe (default): no non-zero motion; with credentials, keepalive
+  move(0,0) is still sent. Add --no-robot to forbid every robot command.
 - patrol: slow in-place rotation sweep (alternating direction) for
   diverse capture angles. Conservative speed, stops on any watchdog
   trip. No translational driving in this stage.
@@ -54,6 +55,14 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode", choices=("observe", "patrol", "follow"), default="observe"
+    )
+    parser.add_argument(
+        "--no-robot",
+        action="store_true",
+        help=(
+            "Hard-disable all Dreame connections and commands, even when "
+            "DREAME_TOKEN is present. Recommended for observation and demos."
+        ),
     )
     parser.add_argument("--duration-min", type=float, default=30.0)
     parser.add_argument("--port", type=int, default=8765)
@@ -177,6 +186,8 @@ def connect_with_wake_retries(session, attempts=3):
 
     ip = _os.getenv("DREAME_IP", ROBOT_IP)
     token = _os.getenv("DREAME_TOKEN")
+    if not ip:
+        raise RuntimeError("DREAME_IP is not set")
     last_exc = None
     for attempt in range(1, attempts + 1):
         try:
@@ -483,7 +494,14 @@ def main(argv=None):
     session = Session(args)
 
     token = os.getenv("DREAME_TOKEN")
-    if token:
+    if args.no_robot:
+        print(
+            "[session] --no-robot: robot connection and every robot command "
+            "are disabled.",
+            flush=True,
+        )
+        session.event("observe_only", "--no-robot")
+    elif token:
         session.robot = connect_with_wake_retries(session)
     else:
         print(

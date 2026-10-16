@@ -21,7 +21,7 @@ from miio.exceptions import DeviceException
 # ============================================================
 
 # ---------- Dreame ----------
-ROBOT_IP = os.getenv("DREAME_IP", "192.168.1.124")
+ROBOT_IP = os.getenv("DREAME_IP")
 ROBOT_TOKEN = os.getenv("DREAME_TOKEN")
 ROBOT_MODEL = "dreame.vacuum.p2028"
 
@@ -368,6 +368,11 @@ class DreameWorker(threading.Thread):
     def __init__(self, command):
         super().__init__(daemon=True)
 
+        if not ROBOT_IP:
+            raise RuntimeError(
+                "DREAME_IP is not set. Use a local environment variable; "
+                "do not commit the robot address."
+            )
         if not ROBOT_TOKEN:
             raise RuntimeError(
                 'DREAME_TOKEN is not set. '

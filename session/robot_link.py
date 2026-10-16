@@ -16,7 +16,7 @@ import os
 import threading
 import time
 
-ROBOT_IP = os.getenv("DREAME_IP", "192.168.1.124")
+ROBOT_IP = os.getenv("DREAME_IP")
 ROBOT_MODEL = "dreame.vacuum.p2028"
 
 MOVING_HZ = 8.0
@@ -77,6 +77,8 @@ class RobotLink:
             DreameVacuum,
         )
 
+        if not ROBOT_IP:
+            raise RuntimeError("DREAME_IP is not set")
         self.robot = DreameVacuum(ROBOT_IP, token, model=ROBOT_MODEL, timeout=2)
         self.command = LatestCommand()
         self._stop = threading.Event()

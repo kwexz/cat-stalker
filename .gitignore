@@ -35,6 +35,14 @@ android/app/.cxx/
 android/local.properties
 *.apk
 *.aab
+# Local media and archives outside data/ are private by default. Add an
+# intentional, reviewed demo under docs/ with git add -f.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.zip
+*.7z
 # IDE / OS
 .idea/
 .vscode/

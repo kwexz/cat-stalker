@@ -76,7 +76,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:hint="PC host, e.g. 192.168.1.239"
+            android:hint="PC host, e.g. 192.0.2.20"
             android:inputType="text"
             android:textColor="#FFFFFF"
             android:textColorHint="#808080"

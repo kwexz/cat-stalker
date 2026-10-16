@@ -18,8 +18,9 @@ back through its speaker. No taps, no logcat watching, no cable.
 
 ## Zero-touch flow
 
-1. PC: `python -m session.auto_session --mode observe` (or `patrol`).
-   It prints the `phone_url`, e.g. `http://192.168.1.239:18768`.
+1. PC: `python -m session.auto_session --mode observe --no-robot` for a
+   guaranteed no-robot-link observation run (or deliberately choose `patrol`).
+   It prints the `phone_url`, e.g. `http://192.0.2.20:18768`.
 2. P30: just launch the app. It boots into NCNN Vulkan, broadcasts
    UDP discovery, finds the collector, and starts uploading by itself.
    The PC host field is only a manual fallback.
@@ -48,7 +49,7 @@ over Wi-Fi until the next reboot.
 
 ## Robot link and sounds
 
-`DREAME_TOKEN` set → full link: `move(0,0)` keepalive at 1.5 Hz
+`DREAME_TOKEN` and `DREAME_IP` set → full link: `move(0,0)` keepalive at 1.5 Hz
 (the Z10 Pro sleeps Wi-Fi otherwise), Quiet fan, speaker signals:
 
 | Signal | Sound | Meaning |
@@ -56,6 +57,9 @@ over Wi-Fi until the next reboot.
 | attention | `locate` (siid 7/aiid 1) | come to the robot/phone |
 | done | `play_sound` ×1 (siid 7/aiid 2) | session finished, collect devices |
 | error | `play_sound` ×2 | error stop, human needed |
+
+`--no-robot` → guaranteed no link or robot command, even if credentials are
+present. This is the recommended observation/demo mode.
 
 `DREAME_TOKEN` missing → observe-only: phone telemetry is still
 collected, but no motion, keepalive, or sounds. The log says so
@@ -147,7 +151,7 @@ from fighting the robot's own safety logic.
 
 - **Speaker first:** `locate` = come here, 1× `play_sound` = done,
   2× = error. No monitoring needed.
-- **Dashboard:** `http://<pc-ip>:<port>/` (e.g. `http://192.168.1.239:8765/`)
+- **Dashboard:** `http://<pc-ip>:<port>/` (e.g. `http://192.0.2.20:8765/`)
   auto-refreshes every 5 s: rows, frames, heartbeat age, FPS, stop
   flag — plus a Stop button. Open from any browser on the LAN.
 - **`sessions/<stamp>/STATUS.md`:** same numbers as text, rewritten
@@ -174,14 +178,13 @@ STATUS.md, dashboard) and writes `ANALYSIS.md` next to the data:
 Retraining itself is deliberately NOT automatic yet: a new fine-tune
 starts only after a human confirms the borderline set, and any
 candidate must pass the false-positive gates (keyboard/cushions/wall
-picture) plus a P30 runtime check before replacing COCO. That is the
-next loop to automate, not this one.
+picture) plus a P30 runtime check before replacing the active model. That
+human gate remains deliberate; the currently accepted runtime is v5.
 
 ## Verifying without the robot
 
 ```powershell
-$env:DREAME_TOKEN = $null
-python -m session.auto_session --mode observe --duration-min 1 --port 8765
+python -m session.auto_session --mode observe --no-robot --duration-min 1 --port 8765
 ```
 
 Then point the app at the printed `phone_url` (or let discovery find

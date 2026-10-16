@@ -18,7 +18,7 @@ This is an experimental pet project. Prefer incremental, testable changes over l
 - Robot: Dreame Z10 Pro
 - Dreame model id: `dreame.vacuum.p2028`
 - Firmware: `4.1.8_1156`
-- Robot LAN IP currently: `192.168.1.124`
+- Robot LAN IP is private and intentionally not documented; use `DREAME_IP`
 - Camera: external USB webcam physically mounted on the robot
 - Phone mount (robot runs): LANDSCAPE only, verified 2026-10-06.
   Portrait is unverified: the steering-axis mapping depends on it.

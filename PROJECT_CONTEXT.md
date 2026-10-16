@@ -22,13 +22,14 @@ Robot:
 - Dreame Z10 Pro
 - model: `dreame.vacuum.p2028`
 - firmware: `4.1.8_1156`
-- current LAN IP: `192.168.1.124`
+- LAN IP: private; supplied locally through `DREAME_IP`
 
 A local miIO token was obtained separately. Do not store it in source control.
 
 PowerShell environment:
 ```powershell
 $env:DREAME_TOKEN="..."
+$env:DREAME_IP="192.0.2.10"  # documentation-only example
 ```
 
 Local device communication test succeeded:
@@ -36,7 +37,7 @@ Local device communication test succeeded:
 from miio.integrations.dreame.vacuum.dreamevacuum_miot import DreameVacuum
 
 d = DreameVacuum(
-    "192.168.1.124",
+    os.environ["DREAME_IP"],
     os.environ["DREAME_TOKEN"],
     model="dreame.vacuum.p2028",
 )
@@ -45,7 +46,7 @@ print(d.info())
 ```
 
 It returned:
-`dreame.vacuum.p2028 v4.1.8_1156 ... @ 192.168.1.124`
+`dreame.vacuum.p2028 v4.1.8_1156 ... @ <private-lan-ip>`
 
 The installed `python-miio` PyPI prerelease had CLI bugs. The working setup uses current GitHub master:
 ```powershell

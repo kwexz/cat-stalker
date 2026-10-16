@@ -1,12 +1,17 @@
 # Cat Stalker Android Vision
 
-This is a self-contained Android prototype. It performs local cat detection only:
+This is the Android edge-vision part of the prototype. It performs cat
+detection locally and can upload structured session telemetry plus selected
+event JPEGs to the PC collector:
 
 ```text
-rear camera -> CameraX latest frame -> YOLO11n runtime -> cat bbox + telemetry overlay
+rear camera -> CameraX latest frame -> YOLO11 runtime -> cat bbox/overlay
+                                               -> telemetry + event JPEG uploader
 ```
 
-It does not control the Dreame, track targets, communicate with a PC, or send camera frames to a network service.
+It does not control the Dreame directly and does not stream continuous video.
+The PC performs target-state/control decisions from uploaded telemetry; the
+phone sends only selected event JPEGs in addition to telemetry.
 
 ## Runtime choice
 
@@ -16,12 +21,14 @@ The P30's Android 10 / Mali stack could not load the current TFLite GPU delegate
 
 ## Model export
 
-The app expects these untracked model assets:
+The app expects these model assets. The TFLite baseline and active v5 NCNN
+asset are currently tracked; other exports remain ignored unless deliberately
+reviewed and added:
 
 ```text
 android/app/src/main/assets/yolo11n_float32.tflite
-android/app/src/main/assets/yolo11n_ncnn_model/model.ncnn.param
-android/app/src/main/assets/yolo11n_ncnn_model/model.ncnn.bin
+android/app/src/main/assets/p30_cat_v5_384_fp16_ncnn_model/model.ncnn.param
+android/app/src/main/assets/p30_cat_v5_384_fp16_ncnn_model/model.ncnn.bin
 ```
 
 NCNN's prebuilt Vulkan headers and `libncnn.so` are also intentionally untracked. Fetch them on Windows before a clean Android build:
@@ -36,16 +43,32 @@ Current Ultralytics versions use the unified LiteRT exporter, which supports Lin
 python tools/export_android_model.py
 ```
 
-The script exports the existing `yolo11n.pt` with `imgsz=480`, float32 RGB input, no embedded NMS, and NCNN. Both decoders expect the YOLO11 raw head `[1, 84, 4725]` (`xywh + 80 COCO scores`). LiteRT returns normalized `xywh`, while NCNN returns pixel `xywh`; both paths convert to source-frame coordinates before the shared overlay. They supply RGB normalized to `[0, 1]`, extract COCO class `15` (`cat`) at confidence `0.28`, and apply class-local NMS at IoU `0.45`.
+The script exports the existing COCO `yolo11n.pt` with `imgsz=480`, float32
+RGB input, no embedded NMS, and NCNN. That is the reproducible baseline-export
+path; the accepted v5 fine-tune and its export history are documented in
+[`../data/p30_cat_training_results.md`](../data/p30_cat_training_results.md).
+Both baseline decoders expect the YOLO11 raw head `[1, 84, 4725]`
+(`xywh + 80 COCO scores`). LiteRT returns normalized `xywh`, while NCNN
+returns pixel `xywh`; both paths convert to source-frame coordinates before
+the shared overlay. They supply RGB normalized to `[0, 1]`, extract COCO class
+`15` (`cat`) at confidence `0.28`, and apply class-local NMS at IoU `0.45`.
 
-Binary `.tflite` assets are ignored by git. Re-run the export after changing the source model.
+Generated `.tflite` assets are ignored by default, with the tracked baseline
+explicitly excepted in `.gitignore`. Re-run the export after changing the
+source model and review licensing/size before adding another binary.
 
 ## Build and install
 
-Requirements: Android Studio / SDK Platform 35, JDK 17+, and a USB-connected Huawei P30 with USB debugging enabled.
+Requirements: Android Studio / SDK Platform 35, JDK 17+, and a USB-connected
+Huawei P30 with USB debugging enabled. The repository does not currently carry
+the Gradle wrapper scripts/JAR, so a clean checkout must either use Android
+Studio's bundled Gradle support or generate/install a Gradle 8.9-compatible
+wrapper for Android Gradle Plugin 8.7.3 before running the command below.
 
 ```powershell
 cd android
+# If absent, create the wrapper with a local compatible Gradle installation:
+# gradle wrapper --gradle-version 8.9
 .\gradlew.bat assembleDebug
 adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
@@ -59,7 +82,9 @@ On the phone, grant the Camera permission. Point the rear camera at a real cat, 
 - CameraX `ImageAnalysis` requests `480x480` and uses `STRATEGY_KEEP_ONLY_LATEST`. The detector still letterboxes to 480x480, so this removes needless high-resolution YUV conversion work.
 - A single analysis executor owns conversion, inference, and detector swapping. A busy inference drops stale frames instead of accumulating latency.
 - The screen shows detection state, confidence, normalized horizontal offset, bbox area ratio, per-frame end-to-end detector time, smoothed analysis/inference FPS, and actual selected backend. Logcat separately reports YUV-to-RGB conversion time.
-- The app does not write telemetry to files. It emits one compact `CatStalkerVision` diagnostic line per second to logcat with bbox coordinates, rotation, inference time, FPS, and backend. Android's system log buffer is ring-buffered independently of this app.
+- The app buffers telemetry in memory for session upload and keeps selected
+  event JPEGs in its cache until the PC acknowledges them. It also emits one
+  compact `CatStalkerVision` diagnostic line per second to logcat.
 
 ## P30 benchmark record
 
@@ -91,7 +116,7 @@ The 480 daylight test improves a sitting cat's maximum detection distance somewh
 
 `p30_cat_v3_384_fp16_ncnn_model` uses a balanced 165-cat/80-negative train split and is the current P30 candidate. It must be tested with bilinear native YUV against the keyboard, cushions, wall picture, lying cat, and no-cat scenes. Its v3 validation score is reported in `data/p30_cat_training_results.md`.
 
-P30 runtime rejected v3: keyboard confidence increased to `0.6-0.8`, more cushions became false positives at `0.5+`, and cat confidence still ranged from `0.4-0.9`. The wall picture no longer triggered, but this does not justify the broader regression. The active runtime returns to COCO 384. Future custom training must use manually selected and reviewed hard-negative images of the exact keyboard, cushions, and wall picture rather than more uniformly sampled negative video frames.
+P30 runtime rejected v3: keyboard confidence increased to `0.6-0.8`, more cushions became false positives at `0.5+`, and cat confidence still ranged from `0.4-0.9`. The wall picture no longer triggered, but this did not justify the broader regression. Later reviewed hard-negative and backlit-frame work produced v5, which is the active runtime model; see [`../data/p30_cat_training_results.md`](../data/p30_cat_training_results.md) for the complete acceptance history and local-dataset caveat.
 
 `p30_cat_v4_384_fp16_ncnn_model` adds nine exact false-positive P30 captures (wall artwork, keyboard/work desk, cushions, cat tower, slippers), repeated as targeted empty-label training examples. It is the current candidate and must be tested against those exact scenes plus the lying cat before it can replace COCO.
 

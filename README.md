@@ -1,283 +1,158 @@
 # Cat Stalker
 
-An experimental pet robotics project: a **Dreame Z10 Pro** robot vacuum
-carries a phone camera, detects the user's real cat with on-device YOLO,
-keeps it centered in frame, and slowly follows it — with a human and a
-kill switch always nearby.
+**Computer vision + edge AI + Android + robotics, built as a reproducible experiment rather than presented as a finished autonomous product.**
 
-Status: working prototype under active tuning (October 2026). The robot
-finds, centers, and approaches a calm sitting cat; a walking cat still
-outruns its turn rate. Not a product; not safe around stairs, cables, or
-other pets.
+[Русский](README_RU.md) · [Safe quick start](#safe-observation-no-robot-connection) · [Measured results](docs/RESULTS.md)
 
-- English (this file) · [Русский](README_RU.md)
+![Huawei P30 mounted on the Dreame while the on-device detector sees the real cat](docs/cat_robot_phone.jpg)
 
-![P30 on the Dreame tracking the cat: DETECTED overlay with bbox](docs/cat_robot_phone.jpg)
+> **Current status — October 2026:** the end-to-end prototype has been exercised with a Huawei P30, on-device YOLO/NCNN inference, LAN telemetry, an 8 Hz controller, and local miIO control of a Dreame Z10 Pro. It can find, center, and approach a **calm, sitting cat** under tested apartment conditions. A walking cat can outrun the robot's measured turn response, so continuous pursuit of a moving cat is **not demonstrated**. Human supervision and a stop control remain mandatory.
 
-## Contents
+## At a glance
 
-- [The idea](#the-idea)
-- [Hardware](#hardware)
-- [Operating modes](#operating-modes)
-- [System architecture](#system-architecture)
-- [Phone app & detector](#phone-app--detector)
-- [Training pipeline](#training-pipeline)
-- [Running a session](#running-a-session)
-- [Follow logic](#follow-logic)
-- [Dreame control](#dreame-control)
-- [Safety](#safety)
-- [Repository & documents](#repository--documents)
-- [Git policy](#git-policy)
-
-Agent notes with exact behavior constants and dated findings:
-[AGENTS.md](AGENTS.md) — read it before changing motion code.
-
-## The idea
-
-A vacuum already knows how to drive; a phone already knows how to see.
-Cat Stalker bolts them together: the phone watches, the PC thinks, the
-robot moves. Detection runs fully on-device (no cloud); the PC only
-receives telemetry rows and occasional event JPEGs, decides motion at
-8 Hz, and sends the single latest `(velocity, rotation)` command to the
-robot. Stale commands are never queued. When vision is uncertain, the
-robot stops — it never drives blind.
-
-## Hardware
-
-| Part | Details |
+| Question | Answer |
 |---|---|
-| Robot | Dreame Z10 Pro, `dreame.vacuum.p2028`, fw `4.1.8_1156`, LAN `192.168.1.124` |
-| Camera | Huawei P30 on the robot, **landscape only**. Portrait mount is unverified: the steering-axis mapping was validated for landscape (a portrait-mounted phone once made the robot steer by the cat's *height* — see `AGENTS.md`) |
-| Reference cam | USB webcam on PC (prototype era) |
-| Manual override | Xbox controller (prototype script) |
-
-## Operating modes
-
-| Mode | Code | Sees with | Thinks on | Drives |
-|---|---|---|---|---|
-| Prototype (reference) | `cat_stalker.py` (Windows) | USB webcam, COCO YOLO + ByteTrack | same PC | Dreame via miIO, Xbox override |
-| Autonomous session | `android/` + `session/` | P30, custom `p30_cat_v5` NCNN | P30 detects, PC decides | Dreame via miIO, no Xbox |
-
-The prototype proved the motion math (V1.5 centered accurately, V1.6
-added approach). The session stack ports that math to the phone stream
-and adds zero-touch operation: launch both ends and walk away; the
-robot reports via speaker sounds.
+| **Task** | Detect the real cat, keep it near the horizontal image center, and approach conservatively. |
+| **Hardware** | Huawei P30 in landscape on a Dreame Z10 Pro; Windows PC on the same private LAN. |
+| **Perception** | YOLO11-derived single-class cat detector, NCNN Vulkan FP16 at 384 px on the phone. |
+| **Data path** | CameraX → NCNN → telemetry/event JPEGs → PC collector → controller → latest-command robot worker → local miIO. |
+| **Already works** | On-device detection; telemetry collection; watchdogs; latest-command semantics; local robot control; centering/approach of a calm cat; explicit no-robot observation mode. |
+| **Experimental** | Autonomous `follow` and `patrol`, target reacquisition, apparent-area distance control, custom detector generalization. |
+| **Not implemented / planned** | Reliable pursuit of a walking cat, odometry-aware search, map/pose integration, calibrated metric distance, product-grade obstacle and pet safety. |
 
 ## System architecture
 
 ```mermaid
 flowchart LR
-    subgraph robot [Dreame Z10 Pro]
-        P30[P30: CameraX → YOLO\nNCNN Vulkan 384 FP16\n~8-9 FPS]
-    end
-    subgraph pc [PC · Windows]
-        COL[collector :8765\ntelemetry CSV + frames]
-        FOL[follow_loop 8 Hz\nlock → steer → forward]
-        ROB[robot worker\nlatest command only]
-        DIS[discovery :8766 UDP]
-        DASH[dashboard :8765 /\nStop button]
-    end
-    P30 -- "telemetry batch / 0.5 s\nHTTP POST" --> COL
-    P30 -- "event JPEGs" --> COL
-    P30 -. "UDP broadcast" .-> DIS
-    COL --> FOL
-    FOL -- "(v, r, source)" --> ROB
-    ROB -- "miIO action move\nsiid 21 / aiid 1" --> robot
-    ROB -. "locate / play_sound" .-> robot
+    CAM[Huawei P30 rear camera] --> CX[CameraX<br/>KEEP_ONLY_LATEST]
+    CX --> NN[YOLO / NCNN Vulkan<br/>384 FP16]
+    NN --> UI[Detection overlay]
+    NN --> TEL[Telemetry + selected event JPEGs]
+    TEL -->|HTTP over private LAN| COL[PC collector]
+    COL --> LOG[(CSV / JSONL / frames)]
+    COL --> CTRL[Target lock + steering + forward controller<br/>8 Hz]
+    CTRL --> SLOT[Single latest-command slot<br/>0.5 s stale-command watchdog]
+    SLOT -->|local miIO| VAC[Dreame Z10 Pro]
 ```
 
-Independent loops and their rates:
+The phone performs inference locally; video is not sent to a cloud service. The PC receives structured telemetry and selected event images. The robot worker never queues old movement commands. Details: [Android runtime](android/README.md), [session orchestration](session/README.md), and the preserved engineering log in [AGENTS.md](AGENTS.md).
 
-| Loop | Rate | Job |
-|---|---|---|
-| Phone `ImageAnalysis` | ~8–9 FPS, `KEEP_ONLY_LATEST` | detect, buffer ≤2000 rows + ~100 MB JPEGs, upload |
-| Collector HTTP | on arrival | persist `phone_telemetry.csv`, `frames/`, heartbeats |
-| `follow_loop` | 8 Hz | target lock, steering, forward, search episodes |
-| Robot worker | 8 Hz moving / 1.5 Hz idle keepalive | send latest `move`, measure RTT, count failures |
-| Main watchdog | 1 Hz | duration, disk, phone silence, fault interlock, `STATUS.md` |
+## Evidence and measured results
 
-Details: [session/README.md](session/README.md),
-[android/README.md](android/README.md).
+These are measurements from this prototype—not vendor benchmarks or general guarantees.
 
-## Phone app & detector
+| Measurement | Observed result | Scope / caveat |
+|---|---:|---|
+| P30 NCNN 384 FP16, native YUV | ~100–120 ms inference, ~8–9 FPS sustained | Huawei P30; transient touch boost reached 12–15 FPS and is **not** used as the control baseline. |
+| Legacy USB/PC YOLO loop | ~33 ms inference, ~12.4 FPS whole loop | Windows, 640×480 MJPEG, `imgsz=480`. |
+| Dreame application RTT | ~18 ms | Observed after continuous `move` traffic woke the robot Wi-Fi. |
+| Phone → controller loop | 8 Hz | Telemetry is uploaded in ~0.5 s batches; forward motion requires frame age ≤0.5 s. |
+| Active v5 detector validation | P 0.937, R 0.939, mAP50 0.958, mAP50–95 0.773 | Local held-out split from Huawei P30 apartment recordings; see the training report. |
 
-Two runtimes, switchable in-app: **NCNN Vulkan 384 FP16 + native YUV**
-(active, ~100–130 ms, ~8–9 FPS sustained) and **TFLite CPU 480**
-(correctness baseline). The TFLite GPU delegate does not load on the
-P30's Mali/Android 10 stack. Native YUV feeds the sensor buffer
-straight to NCNN (bilinear); the bitmap path exists for capture and
-fallback.
+**Dataset warning:** detector precision/recall and mAP were measured on a small, local, video-disjoint dataset recorded in one apartment with one phone and one cat. They do **not** imply comparable accuracy for other cats, rooms, lighting, viewpoints, phones, or printed-cat distractors. Earlier models scored highly offline and still failed on real pillows/keyboards; on-device runtime tests remain the acceptance gate.
 
-P30 operating points measured on-device (full table in
-[android/README.md](android/README.md)): 320/352 rejected (miss the cat
-at ~3.5 m), 480 FP16 rejected (~6 FPS, still unreliable at 4 m+),
-**384 FP16 accepted** — best recall/FPS trade-off.
+See [docs/RESULTS.md](docs/RESULTS.md) for provenance, rejected experiments, control parameters, and interpretation; see [data/p30_cat_training_results.md](data/p30_cat_training_results.md) for the full model lineage.
 
-Detector lineage (full story with metrics:
-[data/p30_cat_training_results.md](data/p30_cat_training_results.md)):
+## What works, what is experimental
 
-| Model | Val P / R | Fate |
-|---|---|---|
-| COCO `yolo11n` | 0.20 / 0.35 | baseline; fires on pillow print, keyboard, artwork |
-| v1 (apartment frames) | 0.959 / 0.959 | rejected on P30: gray-pillow/keyboard FP storm |
-| v2 (+hard negatives) | 0.920 / 0.934 | rejected: missed the real cat (traced to nearest-neighbor native resize, fixed to bilinear) |
-| v3 (balanced negatives) | 0.932 / 0.918 | rejected: keyboard FP at 0.6–0.8 |
-| v4 (+exact failure scenes ×4) | 0.951 / 0.898 | superseded: recall dipped |
-| **v5 (+18 DINO-rescued backlit frames)** | **0.937 / 0.939** | **live on the phone**: gates pass (picture/cushions/keyboard clean, lying cat OK) |
+### Demonstrated
 
-Known residual: v5 still fires on the **printed cat at close
-range / low angle**. That session is marked `NOT_FOR_TRAINING` (hard
-negatives only) — check marker files before any retraining.
+- Huawei P30 CameraX capture and local NCNN Vulkan inference.
+- Cat box, confidence, normalized horizontal offset, apparent bbox area, inference time, FPS, battery, and disk telemetry.
+- PC collection into per-session CSV/JSONL plus selected event JPEGs.
+- Local Dreame action mapping, measured RTT, idle Wi-Fi keepalive, a single latest-command slot, and stale-command timeout.
+- Target centering and forward approach to a calm sitting cat in supervised apartment tests.
+- Stop/hold on stale telemetry, uncertain target state, link degradation, device faults, and session watchdogs.
+- Legacy USB-camera + ByteTrack + Xbox manual-override prototype in [`cat_stalker.py`](cat_stalker.py).
 
-## Training pipeline
+### Experimental—not a safety claim
 
-```mermaid
-flowchart TD
-    VID[P30 videos in apartment\ndata/raw_videos - git-ignored] --> EXT[extract 24 frames/video\ntools/prepare_cat_dataset.py]
-    EXT --> BOOT[bootstrap labels via yolo11n]
-    BOOT --> REV[human review Y/N/M/S/Q\ntools/review_labels.py]
-    SES[session event frames\ntools/import_session_frames.py] --> REV
-    DINO[missed backlit frames\nGrounding DINO Tiny rescue] --> REV
-    REV --> APL[apply labels]
-    APL --> BLD[video-disjoint split\ntools/build_p30_dataset.py]
-    BLD --> TRN[train YOLO11n, CPU ≤60 epochs\ntools/train_p30_cat.py]
-    TRN --> EXP[export NCNN 384 FP16\ntools/export_android_model.py]
-    EXP --> APK[assets + assembleRelease\ninstall on P30]
-    APK --> GATES[runtime gates:\nkeyboard / cushions / artwork clean\nlying + sitting cat found]
-    GATES -- fail --> VID
-```
+- `--mode follow`: persistence/EMA target lock (the phone does not yet provide ByteTrack IDs), steering, area-based approach, and timed search sweeps.
+- `--mode patrol`: in-place data-collection rotation.
+- Reacquisition after brief occlusion and custom v5 detector behavior outside the recorded apartment scenes.
+- Apparent bbox area as distance proxy; it is not metric ranging and depends on pose and viewpoint.
 
-Rules that matter (full workflow:
-[data/DATASET_WORKFLOW.md](data/DATASET_WORKFLOW.md)):
+### Known limitations
 
-- Review with `tools/review_labels.py --dir <name>` (RU keyboard layout
-  accepted). Keep tight boxes, delete prints/reflections, keep
-  cat-free frames as negatives.
-- **Split by source video, never by frame** — otherwise validation lies.
-- Retrain commands:
-  ```powershell
-  .\.venv\Scripts\python.exe tools\build_p30_dataset.py
-  .\.venv\Scripts\python.exe tools\train_p30_cat.py
-  ```
-- Threshold-only fixes are rejected: hard true and false cases overlap
-  at conf 0.3–0.5. Fix data, not thresholds.
-- `tools/test_follow_hold.py` verifies follow-loop hold/sweep behavior
-  without a robot.
+- **Moving-cat pursuit:** a walking cat was observed to move across the camera faster than the platform could rotate (roughly 28°/s apparent tangential motion versus about 9°/s measured at a representative rotation command). The robot may lag, lose the target, and stop/search. Do not claim continuous moving-target following.
+- Printed cats, artwork, cushions, keyboards, backlight, lying posture, partial occlusion, and distances around 4 m+ remain difficult.
+- The Z10 Pro starts its vacuum motor in manual-control mode; the code requests Quiet, but cannot fully disable the fan through the known interface.
+- No metric depth, robot pose/odometry feedback, true wheel-stuck detection, or autonomous reverse.
+- Landscape phone mounting is validated; portrait steering geometry is not.
+- This is not safe around stairs, cables, children, other pets, fragile objects, or unattended animals.
 
-## Running a session
+## Safe observation: no robot connection
 
-Prerequisites: `.venv` with
-`pip install "git+https://github.com/rytilahti/python-miio.git"`,
-`DREAME_TOKEN` in env (never in code), phone + PC on the same Wi-Fi,
-Windows Firewall open for TCP `:8765` and UDP `:8766`.
+The safest reproducible path exercises phone inference, discovery, telemetry, dashboard, and persistence while **hard-disabling every Dreame connection and command**, even if credentials exist in your shell:
 
 ```powershell
+git clone https://github.com/kwexz/cat-stalker.git
+cd cat-stalker
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m session.auto_session --mode observe --no-robot --duration-min 5
+```
+
+The collector/session path uses the Python standard library; no model, camera, Android device, token, or robot is needed to start it. Open `http://127.0.0.1:8765/` locally. If the P30 app is available on the same trusted LAN, set its PC host or use UDP discovery; detections then appear in the dashboard and `sessions/<stamp>/phone_telemetry.csv`.
+
+`--mode observe` by itself never requests non-zero movement, but with valid robot credentials it intentionally connects and sends `move(0,0)` keepalives. Use **`--no-robot`** when “no physical command whatsoever” is required.
+
+Hardware-free checks (Python 3.10+; CI currently uses 3.12):
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+These checks use only the standard library and must not contact a robot, phone, or model runtime.
+
+## Full hardware run (deliberate opt-in)
+
+Only proceed after the no-robot path works. Keep the robot on the floor, clear of stairs/cables/pets; mount the phone in **landscape** without loading the lidar turret; keep a human at the physical stop/manual control.
+
+```powershell
+python -m pip install -r requirements.txt
+$env:DREAME_IP="192.0.2.10"       # replace locally; documentation-only address
+$env:DREAME_TOKEN="..."           # never commit or paste into logs/issues
+
+# Deliberate physical-motion mode—read session/README.md first:
 python -m session.auto_session --mode follow --duration-min 5
-# --mode observe | patrol | follow ; without token everything is observe-only
 ```
 
-Zero-touch flow: start the PC command (it prints `phone_url`), mount
-the phone **landscape** low at the front (must not cover the lidar
-turret or cliff sensors), robot >1 m from walls/dock, launch the app —
-it discovers the collector and streams by itself. Watch
-`http://<pc-ip>:8765/` or `sessions/<stamp>/STATUS.md`.
+The phone and PC must share a trusted LAN. The Android uploader uses plain HTTP on that LAN; do not expose collector ports to the Internet. Full setup, firewall, watchdog, mount, and speaker-signal instructions: [session/README.md](session/README.md).
 
-Speaker vocabulary: `locate` = come here, `play_sound` ×1 = done,
-×2 = error. Every run writes `sessions/<stamp>/`:
-`phone_telemetry.csv`, `robot_telemetry.csv`, `robot_status.csv`,
-`frames/`, `events.jsonl`, `STATUS.md`; `session/analyze.py` adds
-`ANALYSIS.md`.
+## Reproducible experiment structure
 
-Interception: phone Stop button, PC Ctrl+C (safe stop `(0,0)` +
-`stop_clean`), dashboard Stop, or lift the robot. Watchdogs: phone
-silence 15 s hold / 60 s stop, robot failures ≥5 stop, disk <1 GB stop,
-duration end. Full policy: [session/README.md](session/README.md).
-
-## Follow logic
-
-Lock: 3-of-5 frames to acquire (consecutive counting never fires on the
-flickering phone detector) → `TRACKING` with EMA smoothing
-(position 0.60 / size 0.25) → `TEMP_LOST` (≤0.6 s coast on the frozen
-target) → `LOST_WAIT` (hold: 1.5 s minimum, longer if seen <6 s ago or
-adjacent) → one-direction sweep episodes (20 s budget, exit side first,
-otherwise continue for 360°+ coverage) → giveup + listen 10 s → retry.
-Stale frames (>0.5 s) and device faults always stop; a fault also
-resets the lock so a carried robot re-acquires fresh.
-
-```mermaid
-stateDiagram-v2
-    [*] --> SEARCHING
-    SEARCHING --> TRACKING: 3 of last 5
-    TRACKING --> TEMP_LOST: gap ≤0.6 s (coast, keep driving)
-    TEMP_LOST --> TRACKING: reappeared
-    TEMP_LOST --> LOST_WAIT: gap >0.6 s
-    LOST_WAIT --> TRACKING: reappeared
-    LOST_WAIT --> CLOSE_HOLD: hold (flicker / close / recent)
-    LOST_WAIT --> SEARCHING: 20 s budget spent
-    CLOSE_HOLD --> TRACKING: reappeared
-    CLOSE_HOLD --> SEARCHING: budget spent
-    SEARCHING --> SEARCHING: sweep → listen 10 s → retry
-    TRACKING --> [*]: stale / fault / stop
-```
-
-Current tuning (2026-10-06, all in `session/follow.py` /
-`session/auto_session.py`):
-
-| Parameter | Value | Why |
-|---|---|---|
-| Steering P+D, deadband | KP 24 / KD 3, ±0.05–0.10 | ported from prototype V1.5 |
-| Rotation min / max | 10 / 22 | <10 sits in a firmware deadzone (75 s frozen offset proven); 22 is the prototype value, still loses to a walking cat |
-| Cruise max | 40 | 2× twice per operator; turn-fraction scaling keeps turns slow |
-| Forward area start/stop | 0.095 / 0.135 | UNCALIBRATED for the low camera |
-| Forward offset gate | 0.65 | 0.13 blocked all driving (cat lived at 0.58) |
-| Forward conf start/stop | 0.32 / 0.25 | hysteresis against close-range dips |
-| Slew per 8 Hz cycle | 5 rot / 8 vel | ~0.5 s full swing; stops/holds direct |
-| Speed governor | fps/8, floor 0.4 | never outrun fresh frames |
-
-## Dreame control
-
-| Action | siid / aiid | Use |
-|---|---|---|
-| `move` | 21 / 1 | piid 1 = rotation, piid 2 = velocity |
-| `locate` | 7 / 1 | attention signal |
-| `play_sound` | 7 / 2 | ×1 done, ×2 error |
-| `start_clean` / `stop_clean` | 4 / 1, 2 | teardown |
-| `home` | 3 / 1 | |
-
-Manual mode always spins the vacuum motor (`set_fan_speed(0)` → Quiet).
-The Z10 Pro sleeps Wi-Fi aggressively in idle (multi-second buffered
-pings), so the worker sends `move(0,0)` keepalive — 1.5 Hz idle, 8 Hz
-moving. A read-only heartbeat does **not** keep it awake.
-
-## Safety
-
-- Small room, no floor cables, human present, dustbin empty.
-- Speeds are a starting point, not a limit review — raise only after a
-  calm sitting-cat run is stable; `STOP_AREA` guards the approach, watch
-  for overshoot after every speed bump.
-- The stack cannot see drop-offs ahead; the fault interlock reacts
-  after the fact. Never near stairs or table edges (one cliff event
-  already caught in telemetry).
-- No autonomous reverse. `DREAME_TOKEN` from env only.
-
-## Repository & documents
-
-| Path | Contents |
+| Path | Purpose |
 |---|---|
-| `cat_stalker.py` | Windows prototype (reference — Xbox + webcam) |
-| `android/` | P30 app (Kotlin + CameraX, NCNN Vulkan native YUV) — [android/README.md](android/README.md) |
-| `session/` | PC orchestrator (collector, follow, robot link, discovery) — [session/README.md](session/README.md) |
-| `sessions/` | recorded runs (git-ignored) |
-| `tools/` | dataset / training / review / test scripts |
-| `data/` | frames, labels, training results (bulk git-ignored) — [data/DATASET_WORKFLOW.md](data/DATASET_WORKFLOW.md), [data/p30_cat_training_results.md](data/p30_cat_training_results.md) |
-| `AGENTS.md` | agent notes: exact constants, dated findings |
+| [`android/`](android/) | Kotlin/CameraX app, TFLite baseline, NCNN Vulkan/native-YUV runtime. |
+| [`session/`](session/) | PC collector, discovery, watchdogs, controller, and robot-link worker. |
+| [`data/`](data/) | Label manifests and experiment reports; private bulk images/videos are excluded. |
+| [`tools/`](tools/) | Dataset preparation, review, evaluation, export, and hardware-free harnesses. |
+| [`docs/RESULTS.md`](docs/RESULTS.md) | Consolidated measured results and controller configuration. |
+| [`AGENTS.md`](AGENTS.md) | Preserved dated engineering findings and motion constraints. |
+| [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) | Historical handoff notes, including the earlier USB-camera prototype. |
 
-## Git policy
+Raw videos, extracted photos, session frames/logs, generated runs, local environment files, and most model artifacts are ignored. The single published project photo above is intentionally included; it shows the author's real cat and home, so redistribution should be treated as personal media rather than dataset material.
 
-Nothing is committed yet. `.gitignore` already excludes the bulk:
-videos, extracted/review/training images (`data/**/*.jpg|mp4|…`),
-weights (`*.pt`, `*.tflite`), NCNN exports except the live v5 asset
-hardcoded in `ncnn_detector.cpp`, Android build dirs (`.cxx/`,
-`app/build/`, `.gradle/`), `sessions/`, `runs/`, secrets. A first
-commit takes ~180 files: code, docs, labels, manifests, configs — zero
-photos. Raw videos live only on this PC; back them up outside git.
+Reproducibility boundary: the hardware-free PC checks run from a clean clone.
+Exact detector retraining/evaluation still requires the private source media,
+and the Android project currently relies on Android Studio or a locally
+generated Gradle wrapper because wrapper files are not committed.
+
+## Models, data, and licensing
+
+- The repository's original source code is licensed under [MIT](LICENSE).
+- **Ultralytics software and YOLO model artifacts are not relicensed by this MIT file.** Ultralytics currently offers AGPL-3.0 and Enterprise terms; evaluate the terms that apply to training, export, redistribution, embedding, network use, and commercial deployment: [Ultralytics licensing](https://www.ultralytics.com/license) and [upstream LICENSE](https://github.com/ultralytics/ultralytics/blob/main/LICENSE).
+- Base `yolo11n` weights originate from Ultralytics and COCO training. COCO images/annotations and third-party source images retain their own terms; review the [COCO terms of use](https://cocodataset.org/#termsofuse). No COCO images are included here.
+- The local P30 recordings, labels, and fine-tuned weights are separate artifacts. Raw/private media are not published; tracked text manifests are an audit trail, not a distributable image dataset.
+- NCNN, Android/CameraX, `python-miio`, OpenCV, pygame, and their transitive dependencies retain their upstream licenses. Review notices before distributing an APK or binary bundle.
+
+This is a practical separation of repository scope, not legal advice. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Visual evidence
+
+The real setup photo at the top shows the Huawei P30 mounted on the Dreame,
+the actual cat, and the live `DETECTED` overlay. No simulated or generated
+demonstration media are used. Runtime and closed-loop claims are supported by
+the measured records summarized in [`docs/RESULTS.md`](docs/RESULTS.md), with
+their limitations stated explicitly.
